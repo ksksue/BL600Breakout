@@ -1,0 +1,338 @@
+'//******************************************************************************
+'// Keisuke Suzuki (c) 2013
+'//
+'// BL600 Breakout Board's IO check app
+'//
+'//******************************************************************************
+
+'//******************************************************************************
+'// Definitions
+'//******************************************************************************
+
+        //This defines how the application startsup and is a bit mask.
+        //Bit 0 == 1 then OnStartup() is called just before waitevent
+        //Bit 1 == 1 then StartAds() is called just before waitevent
+#define AUTO_STARTUP                         3
+
+        '//Set this to 0 to disable all debugging messages
+#define ENABLE_DEBUG_PRINTS                  1
+
+#define DEVICENAME                           "BBB_IOCHECK"
+#define DEVICENAME_WRITABLE                  1
+#define APPEARANCE                           BLE_APPEARANCE_GENERIC_TAG
+#define MANF_NAME                            "Physicaloid"
+#define MODELSTR                             "BL600"
+#define SERIALNUM                            "12345"
+#define HWREV                                "HwRev1.0"
+#define SWREV                                "SwRev1.0"
+
+#define SYSID                                ""
+#define REGLIST                              ""
+#define PNPID                                ""
+
+#define CHAR_CR                              13
+
+
+        '// Minimum acceptable connection interval (0.5 seconds)
+#define MIN_CONN_INTERVAL                    80000
+        '// Maximum acceptable connection interval (1 second).
+#define MAX_CONN_INTERVAL                    100000
+        '// Slave latency -- number of conn events that can be missed
+        '// Effective Conn interval will be (SLAVE_LATENCY+1)*ACTUAL_CONN_INTERVAL
+#define SLAVE_LATENCY                        1
+        '// Connection supervisory timeout (4 seconds) - max 32 seconds
+#define CONN_SUP_TIMEOUT                     4000000
+        '//DiscoverableMode, set to BLE_DISCOVERABILITY_xxx
+#define DISCOVERY_MODE                       BLE_DISCOVERABILITY_GENERAL
+#define MAX_DEVNAME_CHRS                     10
+        '//Set Appearance advertise 0 to suppress
+#define ADV_APPEARANCE                       1
+        '//Advertise interval
+#define ADV_INTERVAL_MS                      100
+        '//Advertise timeout
+#define ADV_TIMEOUT_MS                       300000
+
+        '//Whitelist Policy in Adverts
+#define ADV_WHITELIST_FILTER_POLICY          ADV_FILTERPOLICY_BOTH
+
+        '//Minimum long term key size in octets
+#define MIN_LTK_SIZE                         8
+        '//Maximum long term key size in octets
+#define MAX_LTK_SIZE                         16
+
+        '// Set this to non-zero to enable notiy on batt service
+#define BATT_NOTIFY                          0
+#define BATT_INIT_LEVEL_PERC                 100
+
+        '//This sets the pairing i/p capability using bonding
+#define PAIRING_IOCAPABILITY                 BLE_IOCAPABILITY_NONE
+
+        '//Connection Update Negotiation paramters
+#define FIRST_CONN_PARAMS_UPDATE_DELAY       5000
+#define NEXT_CONN_PARAMS_UPDATE_DELAY        5000
+#define MAX_CONN_PARAMS_UPDATE_DELAY         15000
+
+#define IOCHECK_POLL_MS                   1500
+
+'//******************************************************************************
+'// Debugging resource as early as possible
+'//******************************************************************************
+
+
+'//******************************************************************************
+'// Library Import
+'//******************************************************************************
+#include "lib\debugging.routines.sblib"
+#include "lib\ble.sblib"
+#include "lib\standard.advert.mngr.sblib"
+#include "lib\advert.report.manager.sblib"
+#include "lib\connection.manager.sblib"
+#include "lib\security.manager.sblib"
+#include "lib\gap.service.sblib"
+#include "lib\device.information.service.sblib"
+
+
+'//******************************************************************************
+'// Debugging resource after libs
+'//******************************************************************************
+
+
+'//******************************************************************************
+'// Global Variable Declarations
+'//******************************************************************************
+
+dim msg$
+dim dt$
+dim advFlags                '//value for flags AD
+
+'//******************************************************************************
+'// Initialisse Global Variable
+'//******************************************************************************
+
+dt$=""
+advFlags = DISCOVERY_MODE    '//can be changed via 'fg' command
+
+
+'//******************************************************************************
+'// Function and Subroutine definitions
+'//******************************************************************************
+
+sub InitVspService()
+  dim rc
+  dim hndl
+  rc = BleVspOpen(128,128,1,hndl)
+endsub
+
+sub InitIO()
+  dim rc
+  rc = GpioSetFunc(1,1,2)  //remover the pull resistor
+  rc = GpioSetFunc(2,1,2)  //remover the pull resistor
+  rc = GpioSetFunc(3,1,2)  //remover the pull resistor
+  rc = GpioSetFunc(4,1,2)  //remover the pull resistor
+
+  rc = GpioSetFunc(1,3,0x0)  //set as analog in
+  rc = GpioSetFunc(2,3,0x0)  //set as analog in
+  rc = GpioSetFunc(3,3,0x0)  //set as analog in
+  rc = GpioSetFunc(4,3,0x0)  //set as analog in
+
+  rc = gpiosetfunc(8,1,2)                '// sio8/I2C SDA, DIGITAL_IN, weak pull up
+  rc = gpiosetfunc(9,1,2)                '// sio9/I2C SCL, DIGITAL_IN, weak pull up
+  rc = gpiosetfunc(10,1,2)               '// sio10/SPI MOSI, DIGITAL_IN, weak pull up
+  rc = gpiosetfunc(11,1,2)               '// sio11/SPI MISO, DIGITAL_IN, weak pull up
+  rc = gpiosetfunc(12,1,2)               '// sio12/SPI CLK, DIGITAL_IN, weak pull up
+//  rc = gpiosetfunc(21,1,2)               '// sio21/TX, DIGITAL_IN, weak pull up
+//  rc = gpiosetfunc(22,1,2)               '// sio22/RX, DIGITAL_IN, weak pull up
+//  rc = gpiosetfunc(23,1,2)               '// sio23/RTS, DIGITAL_IN, weak pull up
+//  rc = gpiosetfunc(24,1,2)               '// sio24/CTS, DIGITAL_IN, weak pull up
+  rc = gpiosetfunc(28,1,2)               '// sio28/nAutrun, DIGITAL_IN, weak pull up
+
+  '// poll on a timer
+  TimerStart(0,IOCHECK_POLL_MS,1)
+endsub
+
+'//==============================================================================
+'// This is called to start things off just before the waitevent at the end of
+'// the file
+'//==============================================================================
+sub OnStartup()
+
+  InitSecurityMngr(PAIRING_IOCAPABILITY,MIN_LTK_SIZE, MAX_LTK_SIZE)
+
+  // Initialise services
+  InitGapService()
+  InitDisService()
+  InitVspService()
+
+  InitIO()
+
+  // Initiliase advert and scan reports
+  InitAdvReports(advFlags)
+
+endsub
+
+'//==============================================================================
+'//==============================================================================
+function StartAds(adv as integer) as integer
+  dim rc
+  rc=StartAdverts(adv)
+  AssertResCode(rc,1100)
+  if rc==0 then
+    DbgMsgVal("Start Adverts",adv)
+  endif
+endfunc rc
+
+'//******************************************************************************
+'// Handler definitions
+'//******************************************************************************
+
+sub sendDin()
+  dim din[6] as integer
+  dim str$ as string
+  dim tx$ as string
+  dim i,n
+
+  '// Digital Read
+  din[0] = GpioRead(8)
+  din[1] = GpioRead(9)
+  din[2] = GpioRead(10)
+  din[3] = GpioRead(11)
+  din[4] = GpioRead(12)
+  din[5] = GpioRead(28)
+
+  tx$=""
+
+  for i=0 to 5
+   sprint #str$,din[i]
+   tx$ = tx$ + str$ + ","
+  next 
+
+  n = BleVspWrite(tx$)
+
+endsub
+
+sub sendAin()
+  dim ain[4] as integer
+  dim str$ as string
+  dim tx$ as string
+  dim i,n
+
+  '// Analog Read
+  ain[0] = GpioRead(1)
+  ain[1] = GpioRead(2)
+  ain[2] = GpioRead(3)
+  ain[3] = GpioRead(4)
+
+  tx$=""
+
+  for i=0 to 3
+   sprint #str$,ain[i]
+   tx$ = tx$ + str$ + ","
+  next
+
+  n = BleVspWrite(tx$)
+endsub
+
+dim trigger
+function HandlerTimer0() as integer
+ if trigger==0 then
+  sendAin()
+  trigger=1
+ else
+  sendDin()
+  trigger=0
+ endif
+endfunc 1
+
+
+function HandlerBleVSpRx() as integer
+  dim n
+  dim rx$
+  n = BleVSpRead(rx$,20)
+  DbgMsgVal("Read  : ",n)
+  DbgMsg(rx$)
+  n = BleVSpWrite(rx$)
+  DbgMsgVal("Write : ",n)
+endfunc 1
+
+'//==============================================================================
+'// This handler is called when there is a BLE message
+'//==============================================================================
+function HandlerBleMsg(BYVAL nMsgId AS INTEGER, BYVAL nCtx AS INTEGER) as integer
+  '// Inform libraries
+  ConnMngrOnBleMsg(nMsgId,nCtx)
+  AdvMngrOnBleMsg(nMsgId,nCtx)
+
+  select nMsgId
+  case BLE_EVBLEMSGID_CONNECT
+    DbgMsgVal(" --- Connect : ",nCtx)
+
+  case BLE_EVBLEMSGID_DISCONNECT
+    DbgMsgVal(" --- Disconnect : ",nCtx)
+
+  case BLE_EVBLEMSGID_HTS_INDICATION_STATE
+    DbgMsgVal(" +++ HTS IND STATE = ",nCtx)
+    //if nCtx == 1 then
+      //Indications have been enabled
+    //endif
+
+  case BLE_EVBLEMSGID_HTS_INDICATION_CNF
+    DbgMsg(" +++ HTS IND CNF")
+    // Can send next measurement data
+
+  case BLE_EVBLEMSGID_DISPLAY_PASSKEY
+    DbgMsgVal("Display Pairing Passkey ",nCtx)
+
+  case BLE_EVBLEMSGID_NEW_BOND
+    DbgMsg(" +++ New Bond")
+
+  case BLE_EVBLEMSGID_UPDATED_BOND
+    DbgMsg(" +++ Updated Bond")
+
+  case BLE_EVBLEMSGID_ENCRYPTED
+    DbgMsg(" +++ Encrypted Connection")
+
+  case BLE_EVBLEMSGID_CONN_TO_BONDED_MASTER
+    DbgMsgVal(" -- Conn to Bonded Master ",nCtx)
+
+  case BLE_EVBLEMSGID_AUTH_KEY_REQUEST
+    DbgMsgVal(" +++ Auth Key Request, type=",nCtx)
+
+  case BLE_EVBLEMSGID_CONN_PARMS_UPDATE
+    DbgMsg(" EvBleMsgId Conn Parm Update")
+
+  case BLE_EVBLEMSGID_CONN_PARMS_UPDATE_FAIL
+    DbgMsg(" ??? Conn Parm Negotiation FAILED")
+
+  case else
+    DbgMsgVal("Unknown Ble Msg", nMsgId)
+  endselect
+
+endfunc 1
+
+'//******************************************************************************
+'// Equivalent to main() in C
+'//******************************************************************************
+
+'//------------------------------------------------------------------------------
+'// Enable synchronous event handlers
+'//------------------------------------------------------------------------------
+OnEvent  EVTMR0             call HandlerTimer0
+'//OnEvent  EVBLE_ADV_TIMEOUT  call HandlerBlrAdvTimOut
+OnEvent  EVBLEMSG           call HandlerBleMsg
+'//OnEvent  EVMSGAPP           call HandlerMsgApp
+OnEvent  EVVSPRX            call HandlerBleVSpRx
+
+'//------------------------------------------------------------------------------
+'// Initialise and then wait for events
+'//------------------------------------------------------------------------------
+dim rc
+OnStartUp()
+rc=StartAds(ADV_IND)
+
+'//------------------------------------------------------------------------------
+'// Wait for a synchronous event.
+'// An application can have multiple <WaitEvent> statements
+'//------------------------------------------------------------------------------
+WaitEvent
+
+
